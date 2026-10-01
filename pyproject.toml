@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "session-record"
+version = "0.1.0"
+description = "Distributed rehearsal recording: OSC-triggered multi-camera capture, song database and export of Wing multitracks + video per song"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["python-osc>=1.8"]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[project.scripts]
+session-record = "session_record.cli:main"
+
+[project.gui-scripts]
+session-record-gui = "session_record.gui:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+session_record = ["config.example.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

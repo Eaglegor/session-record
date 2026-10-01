@@ -1,0 +1,67 @@
+# Copy to config.toml and adjust. Relative paths are relative to this file.
+
+# Song list as CSV ("number,name" per line); edited by the GUI's Songs tab.
+# Merged over the [songs] table at the bottom. The file may not exist yet.
+songs_file = "songs.csv"
+
+[osc]
+# Where this utility listens. Point the second Midi-to-OSC output in VSTLive at
+# <this PC's IP>:<listen_port>.
+listen_host = "0.0.0.0"
+listen_port = 9000
+# Song start/stop messages. The first numeric argument is the song number
+# (e.g. the program change value). A stop without arguments stops the current take.
+start_address = "/rehearsal/song/start"
+stop_address  = "/rehearsal/song/stop"
+
+# Optional relay: if the Midi-to-OSC plugin can only send to one host, send it
+# here and let this utility forward every start/stop message to the Wing.
+# forward_host = "192.168.1.50"   # Wing IP
+# forward_port = 2223             # Wing OSC port
+# forward_start_address = "/rehearsal/song/start"   # default: same as received
+# forward_stop_address  = "/rehearsal/song/stop"
+
+[storage]
+database       = "rehearsals.db"
+recordings_dir = "recordings"
+
+[recording]
+ffmpeg = "ffmpeg"          # full path, or put ffmpeg.exe/ffprobe.exe next to this file or the app
+extension = "mkv"          # mkv survives crashes/power loss better than mp4
+stop_timeout = 10          # seconds to wait for ffmpeg to finalise a file
+
+# One [[cameras]] block per camera. input_args/output_args go straight to ffmpeg.
+# Find device names with:  session-record cameras
+[[cameras]]
+name = "front"
+# Windows (DirectShow) USB camera with its own microphone:
+input_args = ["-f", "dshow", "-rtbufsize", "512M", "-video_size", "1920x1080", "-framerate", "30",
+              "-i", "video=Logitech BRIO:audio=Microphone (Logitech BRIO)"]
+output_args = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-c:a", "aac", "-b:a", "192k"]
+
+[[cameras]]
+name = "drums"
+# IP camera over RTSP, stream copied without re-encoding:
+input_args = ["-rtsp_transport", "tcp", "-i", "rtsp://192.168.1.60:554/stream1"]
+output_args = ["-c", "copy"]
+
+# [[cameras]]
+# name = "side"
+# Linux V4L2:
+# input_args = ["-f", "v4l2", "-framerate", "30", "-video_size", "1920x1080", "-i", "/dev/video0"]
+# NVIDIA hardware encoder:
+# output_args = ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "21"]
+
+[export]
+# Available fields: {seq} take number in the session, {song} song name,
+# {song_number}, {take} n-th take of this song, {take_suffix} " (take n)" when a
+# song was played more than once; {track} (audio) / {camera} (video).
+take_folder = "{seq:02d} - {song}{take_suffix}"
+audio_file  = "{song} - {track}"
+video_file  = "{song} - {camera}"
+
+# Songs dictionary: number -> name. Entries from songs_file (see top) override these.
+[songs]
+1 = "Intro"
+2 = "Highway Star"
+3 = "Ballad in D"
