@@ -13,6 +13,13 @@ from .config import CameraConfig, RecordingConfig
 log = logging.getLogger(__name__)
 
 
+def subprocess_kwargs() -> dict:
+    """No console window per ffmpeg on Windows (matters when running the windowed GUI)."""
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return {}
+
+
 class CameraRecorder:
     """Records a single camera into a file until stop() is called."""
 
@@ -39,8 +46,9 @@ class CameraRecorder:
         self._log_fh = open(path.with_suffix(path.suffix + ".log"), "wb")
         kwargs: dict = {}
         if os.name == "nt":
-            # Keep Ctrl+C in our console from killing ffmpeg before it finalizes the file.
-            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            # Keep Ctrl+C in our console from killing ffmpeg before it finalizes the file,
+            # and don't pop up a console window per camera.
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
         else:
             kwargs["start_new_session"] = True
         cmd = self.command(path)
@@ -92,6 +100,25 @@ def stop_all(recorders: list[CameraRecorder]) -> list[bool]:
     for r in recorders:
         r.request_stop()
     return [r.wait() for r in recorders]
+
+
+def list_devices_command(ffmpeg: str = "ffmpeg") -> list[str] | None:
+    if sys.platform == "win32":
+        return [ffmpeg, "-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"]
+    if sys.platform == "darwin":
+        return [ffmpeg, "-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""]
+    return ["v4l2-ctl", "--list-devices"]
+
+
+def list_devices(ffmpeg: str = "ffmpeg") -> str:
+    """Human-readable list of capture devices (ffmpeg prints it to stderr)."""
+    cmd = list_devices_command(ffmpeg)
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=20,
+                             **subprocess_kwargs())
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"Could not run {cmd[0]}: {e}\n\nHint: {list_devices_hint()}"
+    return (out.stdout + out.stderr).strip()
 
 
 def list_devices_hint() -> str:

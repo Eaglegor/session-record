@@ -52,7 +52,7 @@ def cmd_show(args, config) -> int:
     if args.events:
         print("\nEvents (marker_seq should match the Wing marker list):")
         for e in db.events(session_id):
-            print(f"  marker {e['marker_seq']:>3}  {_fmt_ts(e['ts'])}  {e['kind']:<5} song {e['song_number']}"
+            print(f"  marker {e['marker_seq'] or '-':>3}  {_fmt_ts(e['ts'])}  {e['kind']:<5} song {e['song_number']}"
                   f"  {e['address'] or ''} {e['args'] or ''}  {e['note'] or ''}")
     return 0
 
@@ -105,6 +105,17 @@ def cmd_cameras(args, config) -> int:
     return 0
 
 
+def cmd_init(args) -> int:
+    from .config import write_example_config
+    path = Path(args.config)
+    if path.exists() and not args.force:
+        print(f"{path} already exists (use --force to overwrite)", file=sys.stderr)
+        return 1
+    write_example_config(path)
+    print(f"wrote {path}; edit the cameras and OSC settings, then: session-record -c {path} run")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="session-record", description=__doc__)
     p.add_argument("-c", "--config", default="config.toml", help="config file (default: config.toml)")
@@ -151,6 +162,10 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument("--port", type=int)
     t.set_defaults(func=cmd_send)
 
+    i = sub.add_parser("init", help="create a config file from the example")
+    i.add_argument("--force", action="store_true")
+    i.set_defaults(func=None)
+
     c = sub.add_parser("cameras", help="print the ffmpeg command used for each camera")
     c.set_defaults(func=cmd_cameras)
     return p
@@ -160,10 +175,12 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S")
+    if args.command == "init":
+        return cmd_init(args)
     try:
         config = load_config(args.config)
     except FileNotFoundError:
-        print(f"config file not found: {args.config} (copy config.example.toml to start)", file=sys.stderr)
+        print(f"config file not found: {args.config} (create one with: session-record init)", file=sys.stderr)
         return 2
     return args.func(args, config)
 

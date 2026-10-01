@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import csv
+import shutil
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -54,6 +56,8 @@ class Config:
     export: ExportConfig = field(default_factory=ExportConfig)
     cameras: list[CameraConfig] = field(default_factory=list)
     songs: dict[int, str] = field(default_factory=dict)
+    source: Path | None = None
+    songs_file: Path | None = None
 
     def song_name(self, number: int | None) -> str:
         if number is None:
@@ -75,6 +79,41 @@ def _load_songs_csv(path: Path) -> dict[int, str]:
     return songs
 
 
+def app_dir() -> Path:
+    """Folder of the frozen .exe, or of the package when running from source."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).parent
+
+
+def resolve_tool(name: str, base: Path) -> str:
+    """Use an explicit path as is; otherwise prefer PATH, then a copy next to the config or the app."""
+    if Path(name).parent != Path(".") or shutil.which(name):
+        return name
+    for folder in (base, app_dir(), app_dir() / "ffmpeg", base / "ffmpeg"):
+        for candidate in (folder / name, folder / f"{name}.exe", folder / "bin" / f"{name}.exe"):
+            if candidate.is_file():
+                return str(candidate)
+    return name
+
+
+EXAMPLE_CONFIG = Path(__file__).with_name("config.example.toml")
+
+
+def write_example_config(path: str | Path) -> Path:
+    path = Path(path)
+    path.write_text(EXAMPLE_CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
+    return path
+
+
+def save_songs_csv(path: Path, songs: dict[int, str]) -> None:
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh)
+        w.writerow(["number", "name"])
+        for number in sorted(songs):
+            w.writerow([number, songs[number]])
+
+
 def load_config(path: str | Path) -> Config:
     path = Path(path).resolve()
     with path.open("rb") as fh:
@@ -86,18 +125,23 @@ def load_config(path: str | Path) -> Config:
         return q if q.is_absolute() else base / q
 
     storage = raw.get("storage", {})
-    songs: dict[int, str] = {}
-    if "songs_file" in raw:
-        songs.update(_load_songs_csv(resolve(raw["songs_file"])))
-    songs.update({int(k): str(v) for k, v in raw.get("songs", {}).items()})
+    # CSV wins over [songs] so the list edited in the GUI takes effect
+    songs = {int(k): str(v) for k, v in raw.get("songs", {}).items()}
+    songs_file = resolve(raw["songs_file"]) if "songs_file" in raw else None
+    if songs_file is not None and songs_file.exists():
+        songs.update(_load_songs_csv(songs_file))
+    recording = RecordingConfig(**raw.get("recording", {}))
+    recording.ffmpeg = resolve_tool(recording.ffmpeg, base)
 
     return Config(
         base_dir=base,
         database=resolve(storage.get("database", "rehearsals.db")),
         recordings_dir=resolve(storage.get("recordings_dir", "recordings")),
         osc=OscConfig(**raw.get("osc", {})),
-        recording=RecordingConfig(**raw.get("recording", {})),
+        recording=recording,
         export=ExportConfig(**raw.get("export", {})),
         cameras=[CameraConfig(**c) for c in raw.get("cameras", [])],
         songs=songs,
+        source=path,
+        songs_file=songs_file,
     )

@@ -75,11 +75,27 @@ class Controller:
         except Exception:  # never let a relay failure block recording
             log.exception("failed to forward %s to the mixer", address)
 
+    def manual(self, action: str, song: int | None = None) -> None:
+        """Start/stop triggered from the UI rather than VSTLive.
+
+        With a mixer relay configured the command is forwarded so the Wing places a marker and the
+        numbering stays in sync; otherwise the event is stored without a marker number."""
+        osc = self.config.osc
+        address = osc.start_address if action == "start" else osc.stop_address
+        args = (song,) if song is not None else ()
+        if self.forwarder is not None:
+            self.handle(address, *args)
+        elif action == "start":
+            self.song_start(song, "manual", args, count_marker=False)
+        else:
+            self.song_stop(song, "manual", args, count_marker=False)
+
     # commands -----------------------------------------------------------------
-    def song_start(self, song: int | None, address: str | None = None, args: tuple = ()) -> None:
+    def song_start(self, song: int | None, address: str | None = None, args: tuple = (),
+                   count_marker: bool = True) -> None:
         with self._lock:
             ts = self.clock()
-            marker = self.db.next_marker(self.session_id)
+            marker = self.db.next_marker(self.session_id) if count_marker else None
             note = None
             if self._take is not None and self._take.song_number == song:
                 note = "duplicate start ignored (song already recording)"
@@ -88,17 +104,18 @@ class Controller:
                 self._finish_take(ts, stop_marker=None)
             self.db.add_event(self.session_id, ts, "start", song, marker, address, args, note)
             if note and note.startswith("duplicate"):
-                log.warning("marker %d: start song %s: %s", marker, song, note)
+                log.warning("%s: start song %s: %s", _m(marker), song, note)
                 return
             self._take = self.db.create_take(self.session_id, song, ts, marker)
-            log.info("marker %d: START take #%d song %s '%s'", marker, self._take.seq, song,
+            log.info("%s: START take #%d song %s '%s'", _m(marker), self._take.seq, song,
                      self.config.song_name(song))
             self._start_cameras(self._take, ts)
 
-    def song_stop(self, song: int | None = None, address: str | None = None, args: tuple = ()) -> None:
+    def song_stop(self, song: int | None = None, address: str | None = None, args: tuple = (),
+                  count_marker: bool = True) -> None:
         with self._lock:
             ts = self.clock()
-            marker = self.db.next_marker(self.session_id)
+            marker = self.db.next_marker(self.session_id) if count_marker else None
             note = None
             if self._take is None:
                 note = "stop while idle"
@@ -106,11 +123,11 @@ class Controller:
                 note = f"stop for song {song} while song {self._take.song_number} recording; stopping anyway"
             self.db.add_event(self.session_id, ts, "stop", song, marker, address, args, note)
             if self._take is None:
-                log.warning("marker %d: stop received while idle", marker)
+                log.warning("%s: stop received while idle", _m(marker))
                 return
             if note:
-                log.warning("marker %d: %s", marker, note)
-            log.info("marker %d: STOP  take #%d song %s", marker, self._take.seq, self._take.song_number)
+                log.warning("%s: %s", _m(marker), note)
+            log.info("%s: STOP  take #%d song %s", _m(marker), self._take.seq, self._take.song_number)
             self._finish_take(ts, stop_marker=marker)
 
     def shutdown(self) -> None:
@@ -124,6 +141,19 @@ class Controller:
     @property
     def recording(self) -> bool:
         return self._take is not None
+
+    @property
+    def current_take(self) -> Take | None:
+        return self._take
+
+    @property
+    def finalizing(self) -> int:
+        """Number of takes whose camera files are still being finalized."""
+        return sum(t.is_alive() for t in self._finalizers)
+
+    def camera_states(self) -> list[tuple[str, bool]]:
+        """(camera name, ffmpeg running) for the take being recorded."""
+        return [(rec.camera.name, rec.is_running()) for rec, _ in list(self._recorders)]
 
     # internals ----------------------------------------------------------------
     def take_dir(self) -> Path:
@@ -169,37 +199,88 @@ class Controller:
         self._finalizers = []
 
 
+def _m(marker: int | None) -> str:
+    return f"marker {marker}" if marker is not None else "manual (no marker)"
+
+
 def _safe(name: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
 
 
+class Service:
+    """OSC listener + controller running in a background thread (used by the CLI and the GUI)."""
+
+    def __init__(self, config: Config, session_name: str | None = None, resume: bool = False):
+        self.config = config
+        self.session_name = session_name
+        self.resume = resume
+        self.db: Database | None = None
+        self.controller: Controller | None = None
+        self._server = None
+        self._thread: threading.Thread | None = None
+
+    @property
+    def session_id(self) -> int | None:
+        return self.controller.session_id if self.controller else None
+
+    def start(self) -> None:
+        from pythonosc.dispatcher import Dispatcher
+        from pythonosc.osc_server import BlockingOSCUDPServer
+        from pythonosc.udp_client import SimpleUDPClient
+
+        osc = self.config.osc
+        dispatcher = Dispatcher()
+        # bind first so a busy port fails before a session is created
+        server = BlockingOSCUDPServer((osc.listen_host, osc.listen_port), dispatcher)
+
+        db = Database(self.config.database)
+        session_id = db.latest_session_id() if self.resume else None
+        if session_id is None:
+            session_id = db.create_session(self.session_name, time.time())
+            log.info("new session #%d%s", session_id, f" '{self.session_name}'" if self.session_name else "")
+        else:
+            log.info("resuming session #%d (marker count %d)", session_id,
+                     db.get_session(session_id)["marker_count"])
+
+        forwarder = None
+        if osc.forward_host:
+            client = SimpleUDPClient(osc.forward_host, osc.forward_port)
+            forwarder = lambda addr, args: client.send_message(addr, list(args))  # noqa: E731
+            log.info("relaying start/stop to %s:%d", osc.forward_host, osc.forward_port)
+
+        self.db = db
+        self.controller = Controller(self.config, db, session_id, forwarder=forwarder)
+        dispatcher.set_default_handler(self.controller.handle)
+        self._server = server
+        self._thread = threading.Thread(target=server.serve_forever, name="osc-server", daemon=True)
+        self._thread.start()
+        log.info("listening for OSC on %s:%d  (start=%s stop=%s, %d camera(s))", osc.listen_host,
+                 server.server_address[1], osc.start_address, osc.stop_address, len(self.config.cameras))
+
+    @property
+    def port(self) -> int | None:
+        return self._server.server_address[1] if self._server else None
+
+    @property
+    def running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def stop(self) -> None:
+        if self._server is None:
+            return
+        self._server.shutdown()
+        self._server.server_close()
+        self.controller.shutdown()
+        self.db.close()
+        log.info("session #%d closed", self.controller.session_id)
+        self._server = self._thread = None
+
+
 def run(config: Config, session_name: str | None = None, resume: bool = False) -> None:
     """Run the OSC listener until Ctrl+C."""
-    from pythonosc.dispatcher import Dispatcher
-    from pythonosc.osc_server import BlockingOSCUDPServer
-    from pythonosc.udp_client import SimpleUDPClient
+    service = Service(config, session_name, resume)
+    service.start()
 
-    db = Database(config.database)
-    session_id = db.latest_session_id() if resume else None
-    if session_id is None:
-        session_id = db.create_session(session_name, time.time())
-        log.info("new session #%d%s", session_id, f" '{session_name}'" if session_name else "")
-    else:
-        log.info("resuming session #%d (marker count %d)", session_id, db.get_session(session_id)["marker_count"])
-
-    forwarder = None
-    osc = config.osc
-    if osc.forward_host:
-        client = SimpleUDPClient(osc.forward_host, osc.forward_port)
-        forwarder = lambda addr, args: client.send_message(addr, list(args))  # noqa: E731
-        log.info("relaying start/stop to %s:%d", osc.forward_host, osc.forward_port)
-
-    controller = Controller(config, db, session_id, forwarder=forwarder)
-    dispatcher = Dispatcher()
-    dispatcher.set_default_handler(controller.handle)
-    server = BlockingOSCUDPServer((osc.listen_host, osc.listen_port), dispatcher)
-    log.info("listening for OSC on %s:%d  (start=%s stop=%s, %d camera(s))",
-             osc.listen_host, osc.listen_port, osc.start_address, osc.stop_address, len(config.cameras))
     def _interrupt(signum, frame):
         raise KeyboardInterrupt
     # also finalize recordings on service stop / console window close
@@ -207,11 +288,9 @@ def run(config: Config, session_name: str | None = None, resume: bool = False) -
         if hasattr(signal, name):
             signal.signal(getattr(signal, name), _interrupt)
     try:
-        server.serve_forever()
+        while service.running:
+            time.sleep(0.5)
     except KeyboardInterrupt:
         log.info("interrupted")
     finally:
-        server.server_close()
-        controller.shutdown()
-        db.close()
-        log.info("session #%d closed", session_id)
+        service.stop()

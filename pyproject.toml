@@ -16,8 +16,14 @@ test = ["pytest>=7"]
 [project.scripts]
 session-record = "session_record.cli:main"
 
+[project.gui-scripts]
+session-record-gui = "session_record.gui:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+session_record = ["config.example.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

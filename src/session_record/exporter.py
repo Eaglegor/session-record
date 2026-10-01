@@ -8,7 +8,9 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
+from .cameras import subprocess_kwargs
 from .config import Config
 from .db import Database, Take
 
@@ -247,16 +249,20 @@ def _audio_codec(ffmpeg: str, src: Path) -> str:
     # ffprobe ships next to ffmpeg; use the sibling when ffmpeg is configured by full path
     ffprobe = str(exe.with_name("ffprobe" + exe.suffix)) if exe.parent != Path(".") else "ffprobe"
     out = subprocess.run([ffprobe, "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name",
-                          "-of", "csv=p=0", str(src)], capture_output=True, text=True, check=True)
+                          "-of", "csv=p=0", str(src)], capture_output=True, text=True, check=True,
+                         **subprocess_kwargs())
     return out.stdout.strip() or "pcm_s24le"
 
 
-def execute(actions: list[Action], ffmpeg: str = "ffmpeg", overwrite: bool = False) -> None:
+def execute(actions: list[Action], ffmpeg: str = "ffmpeg", overwrite: bool = False,
+            progress: Callable[[int, int, Action], None] | None = None) -> None:
     for a in actions:
         if a.dst.exists() and not overwrite:
             raise ExportError(f"{a.dst} already exists (use --overwrite)")
     codecs: dict[Path, str] = {}
-    for a in actions:
+    for i, a in enumerate(actions):
+        if progress:
+            progress(i, len(actions), a)
         a.dst.parent.mkdir(parents=True, exist_ok=True)
         log.info(a.describe())
         if a.kind == "copy":
@@ -273,4 +279,4 @@ def execute(actions: list[Action], ffmpeg: str = "ffmpeg", overwrite: bool = Fal
             if a.dst.suffix.lower() == ".wav":
                 cmd += ["-rf64", "auto"]  # long multitrack sessions can exceed 4 GB
             cmd.append(str(a.dst))
-            subprocess.run(cmd, check=True)
+            subprocess.run(cmd, check=True, **subprocess_kwargs())

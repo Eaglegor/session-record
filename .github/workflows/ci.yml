@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install system packages (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg xvfb
+      - run: python -m pip install -e .[test]
+      - name: Test (Linux, virtual display for the GUI test)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python -m pytest -v
+      - name: Test (Windows)
+        if: runner.os == 'Windows'
+        run: python -m pytest -v
+
+  windows-app:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Download ffmpeg
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg
+          $bin = (Get-ChildItem ffmpeg -Recurse -Filter ffmpeg.exe | Select-Object -First 1).DirectoryName
+          "FFMPEG_BIN=$bin" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Build
+        shell: pwsh
+        run: packaging\build_windows.ps1 -FfmpegDir $env:FFMPEG_BIN
+      - name: Smoke test the console exe
+        shell: pwsh
+        run: |
+          dist\SessionRecord\session-record.exe --help
+          Copy-Item dist\SessionRecord\config.example.toml config.toml
+          dist\SessionRecord\session-record.exe -c config.toml cameras
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SessionRecord-windows
+          path: dist/SessionRecord

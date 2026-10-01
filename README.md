@@ -35,18 +35,63 @@ All times come from the camera PC's clock. Only differences between timestamps a
 
 ## Installation (camera PC)
 
-1. Install Python ≥ 3.11 and [ffmpeg](https://ffmpeg.org/download.html), with both `ffmpeg` and `ffprobe` on `PATH` (or set `recording.ffmpeg` to the full path).
+### Windows app (recommended)
+
+1. Get the `SessionRecord-windows` build. Either download it from the repository's **Actions → CI** run (artifact) or build it yourself (below). The folder contains:
+   * `SessionRecord.exe`: the desktop app;
+   * `session-record.exe`: the console tool;
+   * `ffmpeg.exe` and `ffprobe.exe`, when they were bundled at build time.
+2. Copy the folder anywhere (e.g. `C:\SessionRecord`) and start `SessionRecord.exe`.
+3. On the **Setup** tab, click **Create new config…** and save `config.toml` (e.g. into `D:\Rehearsals`). Then:
+   * Click **List capture devices** to find your camera names, put them into the `[[cameras]]` blocks with **Edit config**, then click **Reload**.
+   * Use **Test selected camera (5 s)** to check that each camera records.
+   * Enter your songs in the songs editor (number → name). They are saved to `songs.csv` next to the config.
+4. Allow the OSC UDP port (default 9000) through Windows Firewall. Windows usually asks the first time you click **Start listening**.
+
+To build it yourself: install Python 3.12, download an ffmpeg build (e.g. "release essentials" from gyan.dev), then run:
+
+```
+powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1 -FfmpegDir C:\path\to\ffmpeg\bin
+```
+
+The result is in `dist\SessionRecord\`.
+
+### From source (any OS)
+
+1. Install Python ≥ 3.11 and [ffmpeg](https://ffmpeg.org/download.html).
+   * `ffmpeg` and `ffprobe` must be on `PATH`, placed next to the config or the app, or set via `recording.ffmpeg`.
+   * The desktop app also needs Tkinter. It's included with the python.org Windows installer; on Linux install `python3-tk`.
 2. Install the tool:
    ```
    pip install .
    ```
-3. Copy `config.example.toml` to `config.toml` and edit it:
+   This provides `session-record` (CLI) and `session-record-gui` (desktop app).
+3. Create a config with `session-record init` (writes `config.toml`) and edit it:
    * **Cameras.** Each `[[cameras]]` block is passed directly to ffmpeg. `session-record cameras` prints the command used for each camera and how to list devices:
      * Windows: `ffmpeg -list_devices true -f dshow -i dummy`
      * Linux: `v4l2-ctl --list-devices`
      * IP cameras: an RTSP URL with `-c copy`.
-   * **Songs.** Add them under `[songs]`, or point `songs_file` at a CSV with `number,name` rows.
+   * **Songs.** Add them under `[songs]` and/or in the CSV named by `songs_file` (`number,name` rows). CSV entries take precedence.
 4. Allow the OSC UDP port (default 9000) through the PC's firewall.
+
+## Desktop app
+
+| Tab | What it does |
+|---|---|
+| **Record** | **Start listening** opens a session (named, or **Resume latest session** after a restart). A large status panel shows *waiting* (blue) or *RECORDING* (red) with the song name, elapsed time, take number and Wing marker numbers. It also shows each camera's state and a live list of takes. **Manual control** starts or stops a song without VSTLive. If a mixer relay is configured, the command is forwarded so the Wing places a marker too; otherwise the take is stored without a marker number. |
+| **Sessions** | All sessions, with their takes, video files and status. **Show raw events / markers** lists every received command next to its marker number, for comparison with the Wing's marker list. **Export selected…** opens the session in the Export tab. |
+| **Export** | Pick the session, the LiveSessions export folder, the destination and the audio layout (see *Export modes*). **Preview** lists every copy/cut. **Export** runs it with a progress bar. |
+| **Setup** | Create, open or edit the config; edit the song list; list capture devices; test-record a camera for 5 s; send a test OSC start/stop. |
+
+A log pane at the bottom shows everything the recorder does, with warnings and errors highlighted.
+
+Closing the window while listening asks for confirmation, then finalizes any running camera files.
+
+The app remembers the last config and folders in `%APPDATA%\session-record\gui.json`.
+
+## Command line
+
+Everything is also available from the console, e.g. for running headless.
 
 Test it without VSTLive:
 
@@ -71,12 +116,13 @@ session-record show -e
 ## Rehearsal workflow
 
 1. Start recording on the Wing manually.
-2. On the camera PC, run `session-record run --name "2026-10-01 rehearsal"`, and keep it running. Ctrl+C (or closing the window) finalizes any running recordings and closes the session.
-   * If the tool was restarted mid-rehearsal, use `session-record run --resume` so marker numbering continues.
+2. On the camera PC, click **Start listening** in the app, or run `session-record run --name "2026-10-01 rehearsal"`, and keep it running.
+   * Stopping (the button, Ctrl+C or closing the window) finalizes any running recordings and closes the session.
+   * If the tool was restarted mid-rehearsal, resume the latest session (the checkbox in the app, or `run --resume`) so marker numbering continues.
 3. Play. Each song start/stop is logged and recorded on video.
 4. Stop the Wing recording, then export the multitrack WAVs with LiveSessions.
-5. Check what was captured: `session-record show -e` (latest session) or `session-record sessions`.
-6. Export, with a dry run first:
+5. Check what was captured on the **Sessions** tab, or with `session-record show -e` (latest session) / `session-record sessions`.
+6. Export on the **Export** tab (Preview, then Export), or from the console with a dry run first:
    ```
    session-record export --audio-dir "D:\LiveSessions\Export" --out "D:\Rehearsals\2026-10-01" --dry-run
    session-record export --audio-dir "D:\LiveSessions\Export" --out "D:\Rehearsals\2026-10-01"
@@ -112,7 +158,9 @@ Folder and file names come from the `[export]` templates (`{seq}`, `{song}`, `{s
 
 ```
 pip install -e .[test]
-pytest
+pytest            # on a headless Linux box: xvfb-run -a pytest
 ```
 
-The end-to-end tests send real OSC over UDP and run real ffmpeg capture and WAV splitting. They're skipped if ffmpeg isn't installed.
+The end-to-end tests send real OSC over UDP and run real ffmpeg capture and WAV splitting; they're skipped if ffmpeg isn't installed. `tests/test_gui.py` drives the desktop app through a full listen → record → export cycle; it's skipped where Tk isn't available.
+
+GitHub Actions (`.github/workflows/ci.yml`) runs the tests on Linux and Windows and builds the Windows app as a downloadable artifact.

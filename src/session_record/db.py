@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS events (
     ts          REAL NOT NULL,
     kind        TEXT NOT NULL,          -- 'start' | 'stop'
     song_number INTEGER,
-    marker_seq  INTEGER NOT NULL,
+    marker_seq  INTEGER,                -- NULL for manual commands that placed no Wing marker
     address     TEXT,
     args        TEXT,
     note        TEXT
@@ -123,7 +123,7 @@ class Database:
 
     # events -------------------------------------------------------------
     def add_event(self, session_id: int, ts: float, kind: str, song_number: int | None,
-                  marker_seq: int, address: str | None, args: tuple, note: str | None = None) -> None:
+                  marker_seq: int | None, address: str | None, args: tuple, note: str | None = None) -> None:
         self._exec(
             "INSERT INTO events (session_id, ts, kind, song_number, marker_seq, address, args, note) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
